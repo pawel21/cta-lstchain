@@ -98,3 +98,25 @@ class DragonPedestal(Component):
         for i, j in zip([0, 1, 2, 3, 4, 5, 6], [4, 4, 5, 5, 6, 6, 7]):
             fc[low_gain, i] = first_cap[j]
         return fc
+
+
+class PulseCalibCheck:
+    n_gain = 2
+    n_pixels = 1855
+
+    def __init__(self):
+        self.mean_signal_array = np.zeros((self.n_gain, self.n_pixels))
+
+        self.mean_time_array = np.zeros((self.n_gain, self.n_pixels))
+        self.rms_time_array = np.zeros((self.n_gain, self.n_pixels))
+        self.sum_calib_events = 0
+
+    def fill(self, pulse):
+        self.mean_time_array += pulse
+        self.rms_time_array += pulse ** 2
+        self.sum_calib_events += 1
+
+    def finish(self):
+        self.mean_signal_array = self.mean_signal_array / self.sum_calib_events
+        self.mean_time_array = self.mean_time_array / self.sum_calib_events
+        self.rms_time_array = np.sqrt((self.rms_time_array / self.sum_calib_events) - self.mean_time_array ** 2)
