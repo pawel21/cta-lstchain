@@ -413,12 +413,16 @@ def plot_drs4_pulse_correction(data_file, pedestal_file=None, time_calib_file='n
     p.finish()
     p_corr.finish()
 
+    plt.rc('font', size=15)
     geom = CameraGeometry.from_name("LSTCam", 2)
 
-    # RMS plots
+    # plot open pdf
+    if plot_file != "none":
+        pp = PdfPages(plot_file)
 
+    # RMS plots
     for chan in (np.arange(2)):
-        fig = plt.figure(figsize=(10, 10))
+        fig = plt.figure(figsize=(14, 12))
         pad = 220
 
         mymin = np.median(p.rms_time_array[chan]) - 2 * np.std(p.rms_time_array[chan])
@@ -432,39 +436,40 @@ def plot_drs4_pulse_correction(data_file, pedestal_file=None, time_calib_file='n
             disp.image = image[chan]
             disp.add_colorbar(label="RMS of mean arrival time [ns]")
             disp.cmap = 'gnuplot2'
-
-            #mymin = np.median(image[chan]) - 2 * np.std(image[chan])
-            #mymax = np.median(image[chan]) + 2 * np.std(image[chan])
-
             disp.set_limits_minmax(mymin, mymax)
-            #disp.set_limits_minmax(0, 4)
             plt.xlabel("")
             plt.ylabel("")
             plt.title("")
 
             pad += 1
             plt.subplot(pad)
-            plt.hist(image[chan, :], bins=50, histtype='step', lw=2, range=(mymin, mymax))
+            plt.hist(image[chan, :], bins=50, histtype='step', lw=2, range=(mymin, mymax),
+                     label="Mean RMS = {:8.2f}".format(np.mean(image[chan, :])))
             plt.xlabel("RMS of mean arrival time [ns]")
             plt.ylabel("Number of pixels")
             plt.yscale('log')
-            #plt.tight_layout()
+            plt.legend()
+            if pad==222:
+                plt.title("Before correction")
+            if pad == 224:
+                plt.title("After correction")
             print(f"{channel[chan]} ", end="\t")
-            print("Mean RMS = {}".format(np.mean(image[chan, :])))
+            print("Mean RMS = {:8.2f}".format(np.mean(image[chan, :])))
 
         if chan == 0:
             plt.suptitle("HG", fontsize=25)
         if chan == 1:
             plt.suptitle("LG", fontsize=25)
 
-
-
-    #plt.tight_layout()
-    plt.show()
+        plt.tight_layout()
+        if plot_file != "none":
+            pp.savefig()
+        else:
+            plt.show()
 
     # Mean plots
     for chan in (np.arange(2)):
-        fig = plt.figure(figsize=(10, 10))
+        fig = plt.figure(figsize=(14, 12))
         pad = 220
         sigma = np.std(p.mean_time_array[chan])
         for P in [p, p_corr]:
@@ -486,17 +491,91 @@ def plot_drs4_pulse_correction(data_file, pedestal_file=None, time_calib_file='n
 
             pad += 1
             plt.subplot(pad)
-            plt.hist(image[chan, :], bins=80, histtype='step', lw=2, range=(mymin, mymax))
+            plt.hist(image[chan, :], bins=80, histtype='step', lw=2, range=(mymin, mymax),
+                     label="RMS of mean \narrival time  = {:8.2f}".format(np.std(image[chan, :])))
             plt.xlabel("Mean arrival time [ns]")
             plt.ylabel("Number of pixels")
-
+            plt.legend()
             print(f"{channel[chan]} ", end = "\t")
-            print("RMS of mean arrival time  = {}".format(np.std(image[chan, :])))
+            print("RMS of mean arrival time  = {:8.2f}".format(np.std(image[chan, :])))
+
+            if pad == 222:
+                plt.title("Before correction")
+            if pad == 224:
+                plt.title("After correction")
 
         if chan == 0:
             plt.suptitle("HG", fontsize=25)
         if chan == 1:
             plt.suptitle("LG", fontsize=25)
 
+        plt.tight_layout()
+        if plot_file != "none":
+            pp.savefig()
+        else:
+            plt.show()
 
-    plt.show()
+    if plot_file != "none":
+        pp.close()
+
+
+def plot_rms_with_bad_pixel(path, gain, window_start, window_width, sample_size=10000, tel_id=1):
+
+    charge_config = Config({
+        "FixedWindowSum": {
+            "window_start": window_start,
+            "window_width": window_width}
+    })
+
+    reader = event_source(input_url=path, max_events=sample_size)
+
+    pedestal = PedestalIntegrator(tel_id=1,
+                                  sample_size=sample_size,
+                                  sample_duration=1000000,
+                                  charge_median_cut_outliers=[-5, 5],
+                                  charge_std_cut_outliers=[-5, 5],
+                                  charge_product="FixedWindowSum",
+                                  config=charge_config)
+
+    r0_calib = LSTR0Corrections(tel_id=1, r1_sample_start=3, r1_sample_end=39)
+
+    for i, event in enumerate(reader):
+        calib_data = event.mon.tel[tel_id].calibration
+        r0_calib.calibrate(event)
+        ok = pedestal.calculate_pedestals(event)
+        if ok:
+            ped_data = event.mon.tel[1].pedestal
+            print(event.r0.event_id)
+            break
+
+    mask = event.mon.tel[1].pedestal.charge_std_outliers
+    select = np.logical_not(mask)
+    print("Outliers: ")
+    print(np.where(mask[gain] == True))
+    fig, ax = plt.subplots(1, 3, figsize=(18, 6))
+
+    rms = event.mon.tel[1].pedestal.charge_std[gain][select[gain]] / np.sqrt(window_width)
+    median_rms = np.median(rms)
+
+    print("RMS outlines: ")
+    print(event.mon.tel[1].pedestal.charge_std[gain][np.where(mask[gain] == True)])
+    print("Mean of charge std {}".format(np.mean(event.mon.tel[1].pedestal.charge_std[gain])))
+    print("RMS of charge std {}".format(np.std(event.mon.tel[1].pedestal.charge_std[gain])))
+
+    ax[0].plot(rms, 'go-')
+    ax[0].set_xlabel("Pixel Id")
+    ax[0].set_ylabel("charge std")
+
+    disp0 = CameraDisplay(event.inst.subarray.tels[1].camera, ax=ax[1])
+    disp0.highlight_pixels(mask[gain], linewidth=1, color='black')
+    disp0.cmap = 'jet'
+    disp0.image = event.mon.tel[1].pedestal.charge_std[gain] / np.sqrt(window_width)
+    disp0.set_limits_minmax(0, 2 * median_rms)
+    disp0.add_colorbar(ax=ax[1], label="signal [ADC]")
+
+    ax[2].hist(rms, bins=30, histtype='step', lw=3)
+    ax[2].set_xlabel("RMS [ADC]")
+    ax[2].set_ylabel("Number of pixels")
+    print("Median rms {}".format(np.median(rms)))
+
+    plt.tight_layout()
