@@ -132,6 +132,48 @@ class PulseTimeCorrection(Component):
                                                                                      n_harmonics,
                                                                                      n_cap)
 
+    def get_corr_real_pulse(self, event, pulse):
+        """
+        Return pulse time after time correction.
+        Parameters
+        ----------
+        event : `ctapipe` event-container
+        pulse : ndarray
+            pulse time in each pixel.
+            Stored in a numpy array of shape
+            (2, 1855).
+        """
+        pixel_ids = event.lst.tel[self.tel_id].svc.pixel_ids
+        n_modules_from_event = event.lst.tel[self.tel_id].svc.num_modules
+        pulse_corr = np.empty((n_gain, n_pixels))
+        for nr in prange(0, n_modules_from_event):
+            self.first_cap_array[nr, :, :] = self.get_first_capacitor(event, nr)
+        self.get_corr_real_pulse_jit(pulse,
+                                pulse_corr,
+                                pixel_ids,
+                                self.first_cap_array,
+                                self.fan_array,
+                                self.fbn_array,
+                                self.n_harmonics,
+                                self.n_capacitors)
+        return pulse_corr
+
+    @staticmethod
+    @njit(parallel=True)
+    def get_corr_real_pulse_jit(pulse, pulse_corr, pixel_ids, first_capacitor, fan_array, fbn_array, n_harmonics, n_cap):
+
+        for gain in prange(0, n_gain):
+            for nr in prange(0, n_modules):
+                for pix in prange(0, n_channel):
+                    fc = first_capacitor[nr, gain, pix]
+                    pixel = pixel_ids[nr * 7 + pix]
+                    cap_pos = fc + int(pulse[gain, pixel]) + 3
+                    pulse_corr[gain, pixel] = pulse[gain, pixel] - get_corr_time_jit(cap_pos % n_cap,
+                                                                                     fan_array[gain, pixel],
+                                                                                     fbn_array[gain, pixel],
+                                                                                     n_harmonics,
+                                                                                     n_cap)
+
     def get_first_capacitor(self, event, nr):
         """
             Get first capacitor values from event for nr module.
@@ -150,11 +192,77 @@ class PulseTimeCorrection(Component):
             fc[low_gain, i] = first_cap[j]
         return fc
 
+    def get_pulse_corr_gain_selector(self, event, pulse, gain_mask):
+        pixel_ids = event.lst.tel[self.tel_id].svc.pixel_ids
+        n_modules_from_event = event.lst.tel[self.tel_id].svc.num_modules
+        pulse_corr = np.empty(n_pixels)
+        for nr in prange(0, n_modules_from_event):
+            self.first_cap_array[nr, :, :] = self.get_first_capacitor(event, nr)
+
+        self.get_corr_pulse_jit_gain_select(
+                                pulse,
+                                pulse_corr,
+                                pixel_ids,
+                                self.first_cap_array,
+                                self.fan_array,
+                                self.fbn_array,
+                                self.n_harmonics,
+                                self.n_capacitors,
+                                gain_mask)
+
+        return pulse_corr
+
+    @staticmethod
+    @njit(parallel=True)
+    def get_corr_pulse_jit_gain_select(pulse, pulse_corr, pixel_ids, first_capacitor,
+                           fan_array, fbn_array, n_harmonics, n_cap, gain_mask):
+        """
+        Numba function for pulse time correction.
+        Parameters
+        ----------
+        pulse : ndarray
+            Pulse time stored in a numpy array of shape
+            (n_gain, n_pixels).
+        pulse_corr : ndarray
+            Pulse correction time stored in a numpy array of shape
+            (n_gain, n_pixels).
+        pixel_ids: ndarray
+            Array stored expected pixel id
+            (n_pixels).
+        first_capacitor : ndarray
+            Value of first capacitor stored in a numpy array of shape
+            (n_clus, n_gain, n_pix).
+        fan_array : ndarray
+            Array to store coeff for Fourier series expansion
+            stored in a numpy array of shape
+            (n_gain, n_pixels, n_harmonics).
+        fbn_array : ndarray
+            Array to store coeff for Fourier series expansion
+            stored in a numpy array of shape
+            (n_gain, n_pixels, n_harmonics).
+        n_harmonics : int
+            Number of harmonics
+        gain_mask: ndarray
+            Gain mask with selected gain
+        """
+
+        for nr in prange(0, n_modules):
+            for pix in prange(0, n_channel):
+                pixel = pixel_ids[nr * 7 + pix]
+                gain = gain_mask[pixel]
+                fc = first_capacitor[nr, gain, pix]
+                pulse_corr[pixel] = pulse[gain, pixel] - get_corr_time_jit(fc % n_cap,
+                                                                           fan_array[gain, pixel],
+                                                                           fbn_array[gain, pixel],
+                                                                           n_harmonics,
+                                                                           n_cap)
+
 @njit()
 def get_corr_time_jit(first_cap, fan, fbn, n_harmonics, n_cap):
 
     #time = fan[0] / 2. #commented because time flat-fielding is performed in charge calibrator
-    time = 0
+    #time = 0
+    time = fan[0]/2
     for n in prange(1, n_harmonics):
         time += fan[n] * np.cos((first_cap * n * 2 * np.pi) / n_cap)
         time += fbn[n] * np.sin((first_cap * n * 2 * np.pi) / n_cap)

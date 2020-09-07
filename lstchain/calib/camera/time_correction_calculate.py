@@ -102,7 +102,7 @@ class TimeCorrectionCalculate(Component):
         ----------
         event : `ctapipe` event-container
         """
-        if event.r1.tel[self.tel_id].trigger_type == 1:
+        if event.r1.tel[self.tel_id].trigger_type == -1: # was 1 !!!!!
             for nr_module in prange(0, n_modules):
                 self.first_cap_array[nr_module, :, :] = self.get_first_capacitor(event, nr_module)
 
@@ -255,6 +255,7 @@ class TimeCorrectionCalculate(Component):
         fan_array = np.zeros((n_gain, n_pixels, self.n_harmonics))
         fbn_array = np.zeros((n_gain, n_pixels, self.n_harmonics))
         for pix_id in range(0, n_pixels):
+            print("pix id {}".format(pix_id))
             self.fit(pix_id, gain=high_gain)
             fan_array[high_gain, pix_id, :] = self.fan
             fbn_array[high_gain, pix_id, :] = self.fbn
@@ -272,3 +273,60 @@ class TimeCorrectionCalculate(Component):
 
         except Exception as err:
             print(f"FAILED to create the file {self.calib_file_path}", err)
+
+    def calibrate_real_peak_time(self, event):
+        """
+        Fill bins using time pulse from LocalPeakWindowSum.
+        Real location of peak.
+        Parameters
+        ----------
+        event : `ctapipe` event-container
+        """
+        if event.r1.tel[self.tel_id].trigger_type == -1: # was 1 !!!!!
+            for nr_module in prange(0, n_modules):
+                self.first_cap_array[nr_module, :, :] = self.get_first_capacitor(event, nr_module)
+
+            pixel_ids = event.lst.tel[self.tel_id].svc.pixel_ids
+            waveforms = event.r1.tel[self.tel_id].waveform
+            no_gain_selection = np.zeros((waveforms.shape[0], waveforms.shape[1]), dtype=np.int)
+            # select both gain
+            charge, peak_time = self.extractor(
+                    event.r1.tel[self.tel_id].waveform[:, :, :],
+                    self.tel_id,
+                    no_gain_selection)
+
+            self.calib_real_peak_time_jit(charge,
+                                     peak_time,
+                                     pixel_ids,
+                                     self.first_cap_array,
+                                     self.mean_values_per_bin,
+                                     self.entries_per_bin,
+                                     n_cap=self.n_capacitors,
+                                     n_combine=self.n_combine,
+                                     min_charge=self.minimum_charge)
+            self.sum_events += 1
+
+
+    @staticmethod
+    @njit(parallel=True)
+    def calib_real_peak_time_jit(charge,
+                             peak_time,
+                             pixel_ids,
+                             first_cap_array,
+                             mean_values_per_bin,
+                             entries_per_bin,
+                             n_cap,
+                             n_combine,
+                             min_charge):
+        shift = 3
+        for nr_module in prange(0, n_modules):
+            for gain in prange(0, n_gain):
+                for pix in prange(0, n_channel):
+                    pixel = pixel_ids[nr_module * 7 + pix]
+                    if charge[gain, pixel] > min_charge: # cut change
+                        fc = first_cap_array[nr_module, :, :]
+                        first_cap = (fc[gain, pix])
+                        peak_cap = (first_cap + peak_time[gain, pixel] + shift)%n_cap
+                        bin = int(peak_cap / n_combine)
+                        mean_values_per_bin[gain, pixel, bin] += peak_time[gain, pixel]
+                        entries_per_bin[gain, pixel, bin] += 1
